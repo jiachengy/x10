@@ -1,0 +1,53 @@
+=======================
+A concurrent hash table
+=======================
+
+
+1. Data structures
+The hash table is stored in continuous array. Conflicts are resolved by open-addressing. The capacity of the hash table is set to power of 2. And we use & instead of mod to map a hash key to the bucket, as & is much more faster than the mod operator.
+
+Every bucket is protected by a mutex, which is implemented by an AtomicBoolean in x10.
+
+
+2. Algorithms
+
+My concurrent hash table algorithm combines the idea from lock-free, wait-free hash table with fine-grained locking.
+
+The lock-free, wait-free hash table in the reference is not enough to meet the requirement of this homework. In this homework, it is required to have a total linearilization for every get/put method. The lock-free, wait-free hash table in the reference can not guarantee such linearilization, as it never serializes reads.
+
+To achieve the requirement in the homework, I add a mutex on each bucket to serialize both reads and writes. The mutex is fine-grained, so it has better scalability than a single large lock on the entire hash table.
+
+Reader and writer have similar logic here, because we also want to serialize the reads. If we relax the requirement and allow a weak ordering in reads, the reader's logic can be much more simplified.
+
+How the writer works:
+1. compute the hash function
+2. map the hash code to the bucket using &
+3. probe that bucket to check its existing key
+    3.1 if existing key is another key mapping to the same bucket, reprobe, goto 2
+    3.2 if it is an empty slot. compare and swap my key into that slot.
+        3.2.1 if I succeed to take the slot, go to 4
+        3.2.2 if I fail to take the slot and the slot is taken by another key, reprobe, goto 2
+4. Now we have found the bucket to insert (either because I successfully write my key into the bucket, or some other threads inserting the same key)
+5. acqure the mutex of this bucket
+6. Write the value into the bucket
+7. Atomically increment the global counter. This is my linearlization point.
+8. release the mutex
+9. return
+
+
+How the reader works:
+The reader follows the same logic. But in step 6, instead of write the value, it reads the value from the bucket.
+Note that the reader also needs to perform 3.2 in this algorithm, otherwise it cannot serialize between the reads and other writes.
+
+3. Future work:
+(1) Cache-aware
+This implementation does not optimize for cache behaviors. For example, it's better to store a key/value pair in the same cache line. But in x10, a struct cannot have mutable data, unlike the struct in C/C++. So it is awkward to store key/value together.
+
+
+(2) Resizable hash table
+This implementation does not support dynamic resizing of the hash table. It assumes a fixed hash table capacity. If the hash table size is given in advance, we can adjust the capacity accordingly, e.g. the next power of 2 of the size. To create a resizable hash table, I will need more time to implement.
+   
+
+References:
+A lock-free wait-free hash table - Dr. Cliff Click
+http://www.stanford.edu/class/ee380/Abstracts/070221_LockFreeHash.pdf
