@@ -1,0 +1,84 @@
+======================
+N queens without pawns
+======================
+
+1. Algorithm
+The standard N-queens problem can be solved by DFS. A brute-force DFS can be very expensive as the state space is huge. Noticing that there is exactly one queen per row, we can greatly prune the search space, although the algorithm is still brute-force. 
+
+2. State representation
+Since we only need to enumerate the states that has exactly one queen per row, we can represent the state of a board as an array of N elements. A[i] represent the column id of queens in row i. This representation is space efficient comparing to representing the state in a two-dimensional board and it is efficient to check if the state is valid or not.  
+
+3. Parallel algorithm
+To parallelize N-queens, at each given state, we can initialize the DFS from state in different tasks. In x10's terminology, we can use an async to handle each following search.
+
+There are some pitfalls about using async for every sub-search. The number of cores on a machine is fixed as well as the number of threads (specified by the environment variable X10_NTHREADS). All the async requests eventually can only be executed by these available threads. Too many async will not speed up the performance as long as every thread is running with full payload. Instead, they will add scheduling overhead to the system.
+
+A better way to parallelize the N-queens problem without saturating the systems with unnecessary async request is to pre-partition the problem into several independent and balanced workloads. Since the standard N-queens problem is highly symmetric, so we can easily partition the search into K partitions at the top level, i.e. every thread is searching from an equal-size range in the first row as the first queen.
+
+A limitation to this pre-partition scheme is that it is hardware specific and parameter specific. We have to tune the number of partitions to match with the number of cores and X10_NTHREADS. It also cannot adapt to changing resources, such as new computing resources are added to the systems.
+
+To elaborate to different parallelization scheme, I use the pre-partition solution for N-queens without pawns. And in the N-queens with pawns problem, I just use async and rely on the system to schedule the tasks.
+
+Finally, a reducer is used to accumulate the solution count. This is an infrastructure provided by the X10 runtime. I assume it has better performance than maintaining a variable and applying atomic increment to it every time.
+
+4. References
+The implementation of parallel N-queens without pawns is mostly taken from the code example NQueensPar.x10 and NQueensParAsync.x10.
+
+======================
+N queens with pawns
+======================
+
+1. Algorithm
+The fundamental pruning strategy used by N-queens that every row has exactly one queen does not apply to this variation, because a pawn can block the queens.
+
+The basic idea of my algorithm is that I pre-build an visibility index that records the visibility between any two points. When we are doing a DFS, we check if the newly added point is visible to any of the previous points by looking up in this visibility relationship.
+
+
+2. Parallel algorithm
+The visibility relation building is parallel. First, every point compute its visibility to other points in a separate async. A finish is added after this step to synchronize. Second, for each pawn, it updates the pairs of points it will influence in a separate async. Then we synchronize again.
+
+The DFS is parallelized similarly to the async solution of the N-queens problem.
+
+
+3. Optimization
+
+I add several important pruning conditions after observing the initial performance of the program. These optimization techniques work for both the sparse and the dense configuration, i.e. adapt to various number of pawns.
+
+1) Row pruning
+Although in the general N-queens with pawns problem, we cannot guarantee every row contains exactly one queens. In some conditions, we can. If a row has no pawn on it, then we know that we can place at most one queen on it. If we placed a queen on this row, we can skip the rest of locations on this row.
+
+Row pruning is enabled by pre-building a row pruning index, which essentially says whether we can place more than 1 queen on this row. If we cannot, we can skip the row and proceed to the next. Note that how it simulates the behavior of the N-queens without pawns problem when the board is very sparse.
+
+2) Row pruning++
+Row pruning alone is not enough. It only answer half of the question, i.e. at most how many queens can be placed on the row. But remember in N-queens without pawns, our guarantee is that there is exactly one queen each row. 
+
+Here, I am adding another pruning to compute how many queens at least we need to place in this row, so that we can cut the search range for the next queen. I call this pruning Row pruning++.
+
+To achieve this pruning, an auxiliary index atmost is populated. atmost(i) keeps a upper bound of maximum number of queens we can place at and after row i. For example, in the non-pawn case, the row 0 has atmost(0) = N, and atmost(N-1) = 1. With this upper bound, we can prune those positions that cannot find enough queens after it.
+
+Combining Row-pruning and Row-pruning++, we are simulating exactly the same behavior as the non-pawn algorithm, because we limit the search space for the next queen to be all the positions in the next row.
+
+3) Performance overhead of pruning
+There is not too much additional overhead for computing these auxiliary pruning index. They can be computed in line with the visibility computation.
+
+Although visibility computation may seem expensive, as it is a O(N^3) operation. But comparing with the exponential complexity of the DFS search, it is trivial, especially when N is small. I profiled some tests, and in these tests building is a very small part of the total.
+
+========================
+Other performance issues
+========================
+
+Given more time and better familiarity with X10, I would like to further optimize the program in the following ways:
+
+1. Better memory management
+Every time, we create a new state, we create a new board (PawnBoard) object and allocate a Rail in it. Dynamic memory allocation is very costly. On C/C++ based system, it generates a lot of system calls. On Java-based system, it adds burden to the GC. A common practice to solve this potential performance bottleneck is to create a new memory allocator that pre-allocate a large chunk of memory, and a pool of board objects. Whenever a new board is created, it grabs a block in that chunk atomically.
+
+2. Loop/Async unrolling
+In this project, I just throw all the async into the system. An optimization that can effectively reduce the number of async is to group two or more DFS searches in one async. This is similar to a loop unrolling.
+
+
+3. Reduce branching
+Branch instructions will impair the performance. I am not specifically optimized for non-branch code in this project.
+
+
+4. Avoid divide and mod instruction
+When translating address between the two-dimensional space and the linear address space, I occasionally use division and mod instructions. They are expensive instructions. I could have created an index that pre-compute the address translation and just do it in a look up. It is small and is likely to fit into the cache. But I am not sure whether the random memory access will mess things up.
