@@ -15,8 +15,8 @@ public class Hash
 {
     // the default capacity of the hash table
     // the maximum number of entries we can hold in the hash table
-    private val capacity = 1 << 24;
-    private val mask = capacity - 1;
+    private var capacity : long;
+    private var mask : long;
 
 	private var keys : Rail[AtomicLong];
     private var values : Rail[long];
@@ -41,10 +41,15 @@ public class Hash
         return v;
     }
 
-
-	public def this(defV : long){
+	public def this(defV : long , workers : long , ratio : double , ins_per_thread : long , key_limit : long , value_limit : long){
         // a global atomic counter
 		counter = new AtomicLong();
+        
+        capacity = next_pow_2((key_limit * 2) as long);
+        mask = capacity - 1;
+
+        Console.OUT.println(key_limit);
+        Console.OUT.println(capacity);
         
         // initialize the buckets
         keys = new Rail[AtomicLong](capacity);
