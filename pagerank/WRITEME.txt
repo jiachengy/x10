@@ -1,0 +1,32 @@
+The multi-place parallel page-rank algorithm I implement follows three major steps.
+
+1. Pre-processing
+Before we start our main algorithm, I first do a pre-processing step in convertWebGraph(). The purpose of pre-processing step is to flatten the adjacency list in a WebNode from ArrayList[WebNode] to Rail[Int]. I make this transformation because in the next step, I build the transition matrix Q in multiple places. Each place reads in its part of the graph and build a part of the matrix. The pre-processing is to prevents recursively copying the WebNode object graph. This conversion is done in one place but with multiple threads in parallel.
+
+2. Build distributed transition matrix
+The transition matrix Q is built in parallel on multiple places. And the matrix Q is stored in a DistArray partitioned by columns.
+
+2.1 Ship partitioned adjacency list to places
+First, I ship the adjacency list of a node to its owning place. For example, node 1 belongs to place 0, then the adjacency list of node 1 will be sent to place 0.
+
+2.2 Each place builds their columns in parallel
+After receiving all the adjacency lists of its local nodes, all places start to build their part of the matrix in parallel. Since the only information needed to construct a column in the matrix is the adjacency list of the node of that column, we have all the information local after step 2.1. So no remote access is ever required for step 2.2.
+
+3. Parallel page rank
+The parallel page rank algorithm runs in iterations. Each place will compute a partial page rank solution for its local columns. Then the global page rank is computed by aggregating these local columns.
+
+In each iteration,
+
+3.1 Reset local states and synchronize with the global page rank
+Every place reset its local state to 0 to prepare for the next iteration. It will also sync the aggregated global page ranks from the last iteration for its local columns.
+
+3.2 Compute local page rank in parallel
+Each place compute its local page rank value given the aggregated global page ranks from the last iteration and its own part of the transition matrix Q. The result is stored in a local array local_new_p.
+
+3.3 Aggregate local page ranks
+A central place, e.g. Place 0, will aggregate the local page rank values from all places, and compute a global page ranks and then normalize that vector to 1.
+
+3.4 Checking convergence
+Convergence is checked at the end of the iteration.
+
+
